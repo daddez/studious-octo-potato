@@ -1,0 +1,130 @@
+name: queue-processor
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'  # Ogni 5 minuti
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  process:
+    runs-on: macos-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      - name: Check queue and process URL
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 << 'PYEOF'
+          import json
+          import os
+          import subprocess
+          import time
+          from datetime import datetime, timedelta
+
+          # Leggi queue.json
+          with open('queue.json', 'r') as f:
+              queue_data = json.load(f)
+
+          urls = queue_data.get('urls', [])
+          last_activity = queue_data.get('last_activity')
+
+          # Check timeout (1 ora di inattività)
+          if last_activity:
+              last_time = datetime.fromisoformat(last_activity)
+              now = datetime.now()
+              if (now - last_time).total_seconds() > 3600:
+                  print(f"⏰ Timeout: nessuna attività da {(now - last_time).total_seconds()//60} minuti")
+                  print("Workflow terminato (1h inattività)")
+                  exit(0)
+
+          if not urls:
+              print("✓ Queue vuota - niente da elaborare")
+              exit(0)
+
+          # Prendi primo URL dalla queue
+          current_url = urls[0]
+          job_id = f"queue-{int(time.time())}"
+
+          print(f"📝 Elaborando: {current_url[:80]}")
+          print(f"   Job ID: {job_id}")
+          print(f"   Rimanenti in coda: {len(urls)-1}")
+
+          # Aggiorna queue.json: mark as processing
+          queue_data['processing'] = True
+          queue_data['last_activity'] = datetime.now().isoformat()
+          queue_data['current_url'] = current_url
+          queue_data['current_job_id'] = job_id
+
+          with open('queue.json', 'w') as f:
+              json.dump(queue_data, f, indent=2)
+
+          # Commit aggiornamento queue
+          subprocess.run(['git', 'add', 'queue.json'], check=True)
+          subprocess.run([
+              'git', 'commit', '-m',
+              f'Queue: processing {current_url[:60]}'
+          ], check=True)
+          subprocess.run(['git', 'push', 'origin', 'main'], check=True)
+
+          # Trigger render
+          os.environ['URL'] = current_url
+          os.environ['JOB_ID'] = job_id
+          os.environ['CAPTCHA_API_KEY'] = os.environ.get('TWOCAPTCHA_API_KEY', '')
+
+          # Esegui render.py
+          result = subprocess.run(['python3', 'render.py'], capture_output=True, text=True)
+          print(result.stdout)
+          if result.stderr:
+              print("STDERR:", result.stderr)
+
+          if result.returncode == 0:
+              print(f"✅ Render completato: {job_id}")
+          else:
+              print(f"❌ Render fallito: {job_id}")
+
+          # Aggiorna queue.json: rimuovi URL elaborato
+          queue_data['urls'] = urls[1:]
+          queue_data['processing'] = False
+          queue_data['last_activity'] = datetime.now().isoformat()
+          if 'current_url' in queue_data:
+              del queue_data['current_url']
+          if 'current_job_id' in queue_data:
+              del queue_data['current_job_id']
+
+          with open('queue.json', 'w') as f:
+              json.dump(queue_data, f, indent=2)
+
+          subprocess.run(['git', 'add', 'queue.json'], check=True)
+          subprocess.run([
+              'git', 'commit', '-m',
+              f'Queue: completed {current_url[:60]} - {len(urls)-1} remaining'
+          ], check=True)
+          subprocess.run(['git', 'push', 'origin', 'main'], check=True)
+
+          print(f"\n📊 Queue status:")
+          print(f"   Elaborati: 1")
+          print(f"   Rimanenti: {len(urls)-1}")
+          PYEOF
+
+      - name: Enable safaridriver (real Safari)
+        if: always()
+        run: sudo safaridriver --enable 2>/dev/null || true
+
+      - name: Install Python dependencies
+        if: always()
+        run: pip3 install --user --break-system-packages selenium requests
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4.4.3
+        with:
+          name: queue-results-${{ github.run_id }}
+          path: render-results/
+          retention-days: 7
