@@ -82,7 +82,10 @@ jobs:
               'git', 'config', 'user.email', 'queue-processor@bot.local'
           ], check=True)
 
-          # Pull rebase per evitare merge conflicts
+          # Pull rebase per evitare merge conflicts - configure git auth first
+          git_token = os.environ.get('GITHUB_TOKEN', '')
+          if git_token:
+              subprocess.run(['git', 'config', '--global', 'url.https://' + git_token + '@github.com/.insteadOf', 'https://github.com/'], check=False)
           subprocess.run(['git', 'pull', '--rebase', 'origin', 'main'], check=True, capture_output=True)
 
           subprocess.run([
