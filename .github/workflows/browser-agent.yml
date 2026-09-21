@@ -27,27 +27,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
+      - name: Enable safaridriver (real Safari)
+        run: sudo safaridriver --enable
 
-      - run: npm ci
+      - name: Install Python dependencies
+        run: pip3 install --user --break-system-packages selenium requests
 
-      - uses: actions/cache@v4
-        with:
-          path: ~/Library/Caches/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-
-      - name: Install Safari
-        run: npx playwright-core install --with-deps webkit
-
-      - name: Render URL
+      - name: Render URL with Safari + 2captcha
         env:
           URL: ${{ inputs.url }}
           JOB_ID: ${{ inputs.job_id }}
           CAPTCHA_API_KEY: ${{ secrets.TWOCAPTCHA }}
-        run: node render.js
+        run: python3 render.py
 
       - name: Upload artifact
         if: success()
