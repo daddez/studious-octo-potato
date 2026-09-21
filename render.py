@@ -1,155 +1,62 @@
 #!/usr/bin/env python3
-"""
-Safari browser rendering with 2captcha CAPTCHA solving.
-Uses real Safari via Selenium safaridriver (not Playwright webkit approximation).
-"""
-import os
-import json
-import time
-import base64
-import sys
-from datetime import datetime
-from pathlib import Path
+"""Safari + 2captcha rendering"""
+import os,json,time,base64,sys;from datetime import datetime;from pathlib import Path
+import requests;from selenium import webdriver;from selenium.webdriver.common.by import By
+from selenium.common.exceptions import TimeoutException
 
-import requests
-from selenium import webdriver
-from selenium.webdriver.common.by import By
+def detect_captcha(h):
+    return 'recaptcha_v2' if'g-recaptcha'in h else 'hcaptcha'if'h-captcha'in h else None
 
-
-CAPTCHA_TYPES = {
-    'recaptcha_v2': ['g-recaptcha', 'grecaptcha'],
-    'hcaptcha': ['h-captcha', 'hcaptcha'],
-    'recaptcha_v3': ['recaptcha/enterprise']
-}
-
-
-def detect_captcha(html):
-    """Detect CAPTCHA type from HTML"""
-    for captcha_type, markers in CAPTCHA_TYPES.items():
-        if any(marker in html for marker in markers):
-            return captcha_type
-    return None
-
-
-def solve_captcha_with_2captcha(driver, captcha_type):
-    """Solve CAPTCHA using 2captcha API"""
-    api_key = os.environ.get('CAPTCHA_API_KEY')
-    if not api_key:
-        print('[CAPTCHA] API key not configured, skip')
-        return False
-
-    print(f'[CAPTCHA] Detected: {captcha_type}')
-
+def solve_2captcha(driver,c,url,job):
+    k=os.environ.get('TWOCAPTCHA')
+    if not k:print('[CAPTCHA]No key');return False
+    print(f'[CAPTCHA]{c}')
     try:
-        element = driver.find_element(
-            By.CSS_SELECTOR,
-            '[class*="captcha"], [data-captcha], .g-recaptcha, .h-captcha'
-        )
-
-        screenshot = element.screenshot_as_png
-        base64_image = base64.b64encode(screenshot).decode()
-        print(f'[CAPTCHA] Screenshot: {len(screenshot)} bytes')
-
-        url = os.environ.get('URL', 'https://2captcha.com/it/demo/recaptcha-v2')
-        task_type = 'RecaptchaV2TaskProxyless' if captcha_type == 'recaptcha_v2' else 'HCaptchaTaskProxyless'
-
-        payload = {
-            'clientKey': api_key,
-            'task': {
-                'type': task_type,
-                'websiteURL': url,
-                'websiteKey': 'placeholder',
-                'body': base64_image
-            }
-        }
-
-        response = requests.post(
-            'https://api.2captcha.com/createTask',
-            json=payload,
-            timeout=30
-        )
-        result = response.json()
-
-        if 'taskId' in result:
-            print(f'[CAPTCHA] Task created: {result["taskId"]}')
-            return True
-        else:
-            print(f'[CAPTCHA] Error: {result.get("errorCode", "unknown")}')
-            return False
-
-    except Exception as e:
-        print(f'[CAPTCHA] Error: {e}')
-        return False
-
+        e=driver.find_element(By.CSS_SELECTOR,'[class*=captcha],.g-recaptcha,.h-captcha')
+        s=e.screenshot_as_png
+        if not s or len(s)<100:print('[CAPTCHA]Small');return False
+        b=base64.b64encode(s).decode()
+        print(f'[CAPTCHA]{len(s)}bytes')
+        t='RecaptchaV2TaskProxyless'if c=='recaptcha_v2'else'HCaptchaTaskProxyless'
+        p={'clientKey':k,'task':{'type':t,'websiteURL':url,'websiteKey':'x','body':b}}
+        r=requests.post('https://api.2captcha.com/createTask',json=p,timeout=30).json()
+        if'taskId'not in r:print(f'[CAPTCHA]Fail:{r.get("errorCode")}');return False
+        tid=r['taskId'];print(f'[CAPTCHA]Task{tid}:polling');st=time.time();pc=0
+        while time.time()-st<180:
+            time.sleep(3);pc+=1
+            cr=requests.post('https://api.2captcha.com/getTaskResult',json={'clientKey':k,'taskId':tid},timeout=30).json()
+            if cr.get('status')=='ready':
+                sol=cr.get('solution',{});tok=sol.get('gRecaptchaResponse')or sol.get('token')
+                if tok:print(f'[CAPTCHA]SOLVED({time.time()-st:.0f}s,{pc}polls)');driver.execute_script(f"var e=document.querySelector('[name=g-recaptcha-response]');if(e)e.value='{tok}';");time.sleep(1);return True
+            if cr.get('errorId'):print(f'[CAPTCHA]Error:{cr.get("errorCode")}');return False
+        print('[CAPTCHA]Timeout');return False
+    except Exception as e:print(f'[CAPTCHA]E:{e}');return False
 
 def main():
-    url = os.environ.get('URL')
-    job_id = os.environ.get('JOB_ID')
-
-    if not url or not job_id:
-        print('[RENDER] ERROR: URL and JOB_ID environment variables required')
-        sys.exit(1)
-
-    print(f'[RENDER] URL: {url}')
-    print(f'[RENDER] Job ID: {job_id}')
-    print('[RENDER] Browser: Safari (real via safaridriver) on macOS')
-
-    driver = webdriver.Safari()
-
+    u,j=os.environ.get('URL'),os.environ.get('JOB_ID')
+    if not u or not j:print('[RENDER]ERROR:URL+JOB_ID');sys.exit(1)
+    print(f'[RENDER]URL:{u}\n[RENDER]JobID:{j}\n[RENDER]Browser:Safari')
+    d=None
     try:
-        driver.get('about:blank')
-        driver.execute_script("""
-            Object.defineProperty(navigator, 'userAgent', {
-                get: function () {
-                    return 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15';
-                }
-            });
-        """)
-
-        print('[RENDER] Navigating...')
-        driver.get(url)
-
-        time.sleep(2)
-
-        html = driver.page_source
-        captcha_type = detect_captcha(html)
-
-        if captcha_type:
-            solve_captcha_with_2captcha(driver, captcha_type)
-            time.sleep(3)
-            html = driver.page_source
-        else:
-            print('[CAPTCHA] No CAPTCHA detected')
-
-        output_dir = Path('render-results')
-        output_dir.mkdir(exist_ok=True)
-
-        output_file = output_dir / f'rendered-{job_id}.html'
-        output_file.write_text(html, encoding='utf-8')
-        print(f'[RENDER] HTML saved: {output_file} ({len(html)} bytes)')
-
-        meta_file = output_dir / f'meta-{job_id}.json'
-        meta = {
-            'url': url,
-            'jobId': job_id,
-            'browser': 'Safari (real safaridriver)',
-            'os': 'macOS',
-            'timestamp': datetime.utcnow().isoformat(),
-            'htmlSize': len(html),
-            'captchaDetected': bool(captcha_type)
-        }
-        meta_file.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding='utf-8')
-        print('[RENDER] Completed successfully')
-
-        sys.exit(0)
-
-    except Exception as e:
-        print(f'[RENDER] Error: {e}')
-        sys.exit(1)
-
+        d=webdriver.Safari();d.set_page_load_timeout(45)
+    except:
+        try:d=webdriver.Safari();d.set_page_load_timeout(30)
+        except:print('[RENDER]FATAL');sys.exit(1)
+    try:
+        d.get('about:blank');d.execute_script("if(!Promise.prototype.finally)Promise.prototype.finally=function(f){return this.then(v=>Promise.resolve(f()).then(()=>v),r=>Promise.resolve(f()).then(()=>{throw r}))};")
+        print('[RENDER]Polyfill');print('[RENDER]Navigate')
+        try:d.get(u)
+        except:print('[RENDER]Timeout')
+        time.sleep(2);h=d.page_source;c=detect_captcha(h)
+        if c:print('[RENDER]CAPTCHA detected');solve_2captcha(d,c,u,j);time.sleep(3);h=d.page_source
+        else:print('[CAPTCHA]No')
+        Path('render-results').mkdir(exist_ok=True)
+        Path(f'render-results/rendered-{j}.html').write_text(h,encoding='utf-8')
+        print(f'[RENDER]HTML:{len(h)}bytes')
+        Path(f'render-results/meta-{j}.json').write_text(json.dumps({'url':u,'jobId':j,'ts':datetime.utcnow().isoformat(),'size':len(h),'captcha':bool(c)},indent=2),encoding='utf-8')
+        print('[RENDER]OK');sys.exit(0)
+    except Exception as e:print(f'[RENDER]FATAL:{e}');sys.exit(1)
     finally:
-        driver.quit()
+        if d:d.quit()
 
-
-if __name__ == '__main__':
-    main()
+if __name__=='__main__':main()
