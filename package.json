@@ -1,0 +1,7 @@
+{
+  "name": "safari-renderer",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Safari browser rendering with 2captcha CAPTCHA solving",
+  "main": "render.js"
+}
