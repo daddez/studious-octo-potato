@@ -2,12 +2,11 @@ name: queue-processor
 
 on:
   schedule:
-    - cron: '*/5 * * * *'  # Ogni 5 minuti
+    - cron: '*/5 * * * *'
   workflow_dispatch: {}
 
 permissions:
   contents: write
-  actions: write
 
 concurrency:
   group: queue-processor-lock
@@ -23,85 +22,80 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Check queue and process URL
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Check queue and extract URL
+        id: queue
         run: |
           python3 << 'PYEOF'
           import json
           import os
-          import subprocess
           import time
-          from datetime import datetime
 
           with open('queue.json', 'r') as f:
               queue_data = json.load(f)
 
           urls = queue_data.get('urls', [])
           if not urls:
-              print("✓ Queue vuota")
+              print("Queue empty")
               exit(0)
 
           current_url = urls[0]
           job_id = f"queue-{int(time.time())}"
 
-          print(f"📝 Elaborando: {current_url[:80]}")
-          print(f"   Job ID: {job_id}")
-          print(f"   Rimanenti in coda: {len(urls)-1}")
+          print(f"Processing: {current_url}")
+          print(f"Job ID: {job_id}")
 
-          queue_data['processing'] = True
-          queue_data['last_activity'] = datetime.now().isoformat()
-          queue_data['current_url'] = current_url
-          queue_data['current_job_id'] = job_id
-
-          with open('queue.json', 'w') as f:
-              json.dump(queue_data, f, indent=2)
-
-          subprocess.run(['git', 'add', 'queue.json'], check=True)
-          subprocess.run(['git', 'config', 'user.name', 'queue-processor-bot'], check=True)
-          subprocess.run(['git', 'config', 'user.email', 'queue-processor@bot.local'], check=True)
-          subprocess.run(['git', 'commit', '-m', f'[QUEUE] Processing {current_url[:60]}...'], check=True)
-          subprocess.run(['git', 'push', 'origin', 'main'], check=True)
-
-          print("✓ Queue status committed")
+          # Output for next steps
+          with open(os.environ.get('GITHUB_OUTPUT', '/dev/null'), 'a') as f:
+              f.write(f"current_url={current_url}\n")
+              f.write(f"job_id={job_id}\n")
+              f.write(f"has_url=true\n")
           PYEOF
 
       - name: Install Python dependencies
+        if: steps.queue.outputs.has_url == 'true'
         run: |
           pip install --user selenium requests
 
       - name: Process via Safari
+        if: steps.queue.outputs.has_url == 'true'
         env:
           URL: ${{ steps.queue.outputs.current_url }}
-          JOB_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+          JOB_ID: ${{ steps.queue.outputs.job_id }}
           TWOCAPTCHA: ${{ secrets.TWOCAPTCHA_API_KEY }}
         run: |
           python3 render.py
 
-      - name: Update queue (GitHub script - safe auth)
-        if: always()
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const path = 'queue.json';
-            
-            if (!fs.existsSync(path)) {
-              console.log('✓ Queue file not found (already cleaned)');
-              return;
-            }
+      - name: Update queue after processing
+        if: always() && steps.queue.outputs.has_url == 'true'
+        run: |
+          python3 << 'PYEOF'
+          import json
+          import subprocess
 
-            const queue = JSON.parse(fs.readFileSync(path, 'utf8'));
-            if (queue.urls && queue.urls.length > 0) {
-              queue.urls.shift();
-              queue.processing = false;
-              
-              fs.writeFileSync(path, JSON.stringify(queue, null, 2));
-              
-              // Commit with GitHub's safe auth
-              exec.exec('git', ['add', 'queue.json']);
-              exec.exec('git', ['config', 'user.name', 'github-actions[bot]']);
-              exec.exec('git', ['config', 'user.email', 'github-actions[bot]@users.noreply.github.com']);
-              exec.exec('git', ['commit', '-m', '[QUEUE] URL processed']);
-              exec.exec('git', ['push']);
-            }
+          with open('queue.json', 'r') as f:
+              queue_data = json.load(f)
+
+          if queue_data.get('urls'):
+              queue_data['urls'].pop(0)
+              queue_data['processing'] = False
+
+              with open('queue.json', 'w') as f:
+                  json.dump(queue_data, f, indent=2)
+
+              subprocess.run(['git', 'config', 'user.name', 'queue-processor-bot'], check=False)
+              subprocess.run(['git', 'config', 'user.email', 'queue-processor@bot.local'], check=False)
+              subprocess.run(['git', 'add', 'queue.json'], check=False)
+
+              result = subprocess.run(['git', 'commit', '-m', '[QUEUE] URL processed'], capture_output=True)
+              if result.returncode == 0:
+                  subprocess.run(['git', 'push', 'origin', 'main'], check=False, timeout=30)
+          PYEOF
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: render-results
+          path: render-results/
+          retention-days: 7
+          if-no-files-found: ignore
