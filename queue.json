@@ -2,9 +2,9 @@
   "urls": [
     "https://www.google.com/recaptcha/api2/demo"
   ],
-  "processing": false,
-  "last_activity": "2026-09-21T17:45:37.073780",
+  "processing": true,
+  "last_activity": "2026-09-21T15:46:14.266795",
   "timestamp_created": "2026-09-21T16:00:00Z",
   "current_url": "https://www.google.com/recaptcha/api2/demo",
-  "current_job_id": "queue-1790005343"
+  "current_job_id": "queue-1790005574"
 }
