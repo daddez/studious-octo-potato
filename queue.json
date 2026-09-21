@@ -1,7 +1,5 @@
 {
-  "urls": [
-    "https://www.google.com/recaptcha/api2/demo"
-  ],
+  "urls": [],
   "processing": false,
   "last_activity": "2026-09-21T17:56:51.076951",
   "timestamp_created": "2026-09-21T16:00:00Z",
