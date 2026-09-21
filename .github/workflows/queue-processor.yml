@@ -61,7 +61,7 @@ jobs:
         env:
           URL: ${{ steps.queue.outputs.current_url }}
           JOB_ID: ${{ steps.queue.outputs.job_id }}
-          TWOCAPTCHA: ${{ secrets.TWOCAPTCHA_API_KEY }}
+          TWOCAPTCHA: ${{ secrets.TWOCAPTCHA }}
         run: |
           python3 render.py
 
