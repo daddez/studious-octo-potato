@@ -1,0 +1,58 @@
+name: browser-agent
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'URL to render'
+        required: true
+        type: string
+      job_id:
+        description: 'Job ID'
+        required: true
+        type: string
+
+concurrency:
+  group: browser-${{ inputs.job_id }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    runs-on: macos-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      - name: Install Safari
+        run: npx playwright-core install --with-deps webkit
+
+      - name: Render URL
+        env:
+          URL: ${{ inputs.url }}
+          JOB_ID: ${{ inputs.job_id }}
+          CAPTCHA_API_KEY: ${{ secrets.TWOCAPTCHA }}
+        run: node render.js
+
+      - name: Upload artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: render-results-${{ inputs.job_id }}
+          path: render-results/
+          retention-days: 7
