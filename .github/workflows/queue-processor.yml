@@ -66,6 +66,11 @@ jobs:
           print("✓ Queue status committed")
           PYEOF
 
+      - name: Install Python dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          pip install selenium requests
+
       - name: Process via Safari
         env:
           URL: ${{ steps.queue.outputs.current_url }}
