@@ -68,8 +68,7 @@ jobs:
 
       - name: Install Python dependencies
         run: |
-          python3 -m pip install --upgrade pip
-          pip install selenium requests
+          pip install --user selenium requests
 
       - name: Process via Safari
         env:
