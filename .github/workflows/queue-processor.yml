@@ -15,7 +15,7 @@ concurrency:
 jobs:
   process:
     runs-on: macos-latest
-    timeout-minutes: 20
+    timeout-minutes: 12
 
     steps:
       - uses: actions/checkout@v4
@@ -92,7 +92,7 @@ jobs:
           PYEOF
 
       - name: Upload artifacts
-        if: always()
+        if: steps.queue.outputs.has_url == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: render-results
