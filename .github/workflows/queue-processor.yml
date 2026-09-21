@@ -9,8 +9,6 @@ permissions:
   contents: write
   actions: write
 
-# CRITICAL: Concurrency lock per prevenire race conditions
-# Solo un job può processare la queue alla volta
 concurrency:
   group: queue-processor-lock
   cancel-in-progress: true
@@ -21,9 +19,9 @@ jobs:
     timeout-minutes: 20
 
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          fetch-depth: 0
 
       - name: Check queue and process URL
         env:
@@ -34,29 +32,16 @@ jobs:
           import os
           import subprocess
           import time
-          from datetime import datetime, timedelta
+          from datetime import datetime
 
-          # Leggi queue.json
           with open('queue.json', 'r') as f:
               queue_data = json.load(f)
 
           urls = queue_data.get('urls', [])
-          last_activity = queue_data.get('last_activity')
-
-          # Check timeout (1 ora di inattività)
-          if last_activity:
-              last_time = datetime.fromisoformat(last_activity)
-              now = datetime.now()
-              if (now - last_time).total_seconds() > 3600:
-                  print(f"⏰ Timeout: nessuna attività da {(now - last_time).total_seconds()//60} minuti")
-                  print("Workflow terminato (1h inattività)")
-                  exit(0)
-
           if not urls:
-              print("✓ Queue vuota - niente da elaborare")
+              print("✓ Queue vuota")
               exit(0)
 
-          # Prendi primo URL dalla queue
           current_url = urls[0]
           job_id = f"queue-{int(time.time())}"
 
@@ -64,7 +49,6 @@ jobs:
           print(f"   Job ID: {job_id}")
           print(f"   Rimanenti in coda: {len(urls)-1}")
 
-          # Aggiorna queue.json: mark as processing
           queue_data['processing'] = True
           queue_data['last_activity'] = datetime.now().isoformat()
           queue_data['current_url'] = current_url
@@ -73,110 +57,47 @@ jobs:
           with open('queue.json', 'w') as f:
               json.dump(queue_data, f, indent=2)
 
-          # Commit aggiornamento queue (ATOMIC: git pull --rebase prima di push)
           subprocess.run(['git', 'add', 'queue.json'], check=True)
-          subprocess.run([
-              'git', 'config', 'user.name', 'queue-processor-bot'
-          ], check=True)
-          subprocess.run([
-              'git', 'config', 'user.email', 'queue-processor@bot.local'
-          ], check=True)
+          subprocess.run(['git', 'config', 'user.name', 'queue-processor-bot'], check=True)
+          subprocess.run(['git', 'config', 'user.email', 'queue-processor@bot.local'], check=True)
+          subprocess.run(['git', 'commit', '-m', f'[QUEUE] Processing {current_url[:60]}...'], check=True)
+          subprocess.run(['git', 'push', 'origin', 'main'], check=True)
 
-          # Pull rebase per evitare merge conflicts
-          git_token = os.environ.get('GITHUB_TOKEN', '')
-          if git_token:
-              # Pull con token nel URL
-              remote_url = f'https://{git_token}@github.com/daddez/studious-octo-potato.git'
-              subprocess.run(['git', 'remote', 'set-url', 'origin', remote_url], check=True)
-          subprocess.run(['git', 'pull', '--rebase', 'origin', 'main'], check=True, capture_output=True)
-
-          subprocess.run([
-              'git', 'commit', '-m',
-              f'[QUEUE] Processing {current_url[:60]}... (ID: {job_id})'
-          ], check=True)
-
-          # Push con retry su conflict
-          max_retries = 3
-          for attempt in range(max_retries):
-              try:
-                  subprocess.run(['git', 'push', 'origin', 'main'], check=True, capture_output=True, timeout=30)
-                  print("✓ Queue status pushed to GitHub")
-                  break
-              except subprocess.CalledProcessError:
-                  if attempt < max_retries - 1:
-                      print(f"⚠️ Push attempt {attempt+1} failed, retrying...")
-                      subprocess.run(['git', 'pull', '--rebase', 'origin', 'main'], check=True, capture_output=True)
-                  else:
-                      print("❌ Push failed after 3 retries - queue lock held")
-                      exit(1)
-
-          # Esegui render.py
-          os.environ['URL'] = current_url
-          os.environ['JOB_ID'] = job_id
-          os.environ['CAPTCHA_API_KEY'] = os.environ.get('TWOCAPTCHA_API_KEY', '')
-
-          result = subprocess.run(['python3', 'render.py'], capture_output=True, text=True)
-          print(result.stdout)
-          if result.stderr:
-              print("STDERR:", result.stderr)
-
-          if result.returncode == 0:
-              print(f"✅ Render completato: {job_id}")
-          else:
-              print(f"⚠️ Render failed (returncode={result.returncode}), continuando con prossimo URL...")
-
-          # Aggiorna queue.json: rimuovi URL elaborato (ATOMIC: pull rebase + push)
-          with open('queue.json', 'r') as f:
-              queue_data = json.load(f)
-
-          queue_data['urls'] = queue_data['urls'][1:]  # Remove first URL
-          queue_data['processing'] = False
-          queue_data['last_activity'] = datetime.now().isoformat()
-          if 'current_url' in queue_data:
-              del queue_data['current_url']
-          if 'current_job_id' in queue_data:
-              del queue_data['current_job_id']
-
-          with open('queue.json', 'w') as f:
-              json.dump(queue_data, f, indent=2)
-
-          subprocess.run(['git', 'add', 'queue.json'], check=True)
-
-          # Pull rebase again before final commit
-          subprocess.run(['git', 'pull', '--rebase', 'origin', 'main'], check=True, capture_output=True)
-
-          remaining = len(queue_data['urls'])
-          subprocess.run([
-              'git', 'commit', '-m',
-              f'[QUEUE] Completed {current_url[:50]}... - {remaining} remaining'
-          ], check=True)
-
-          # Final push with retry
-          for attempt in range(max_retries):
-              try:
-                  subprocess.run(['git', 'push', 'origin', 'main'], check=True, capture_output=True, timeout=30)
-                  break
-              except subprocess.CalledProcessError:
-                  if attempt < max_retries - 1:
-                      subprocess.run(['git', 'pull', '--rebase', 'origin', 'main'], check=True, capture_output=True)
-
-          print(f"\n📊 Queue status:")
-          print(f"   Elaborati: 1")
-          print(f"   Rimanenti: {remaining}")
+          print("✓ Queue status committed")
           PYEOF
 
-      - name: Enable safaridriver (real Safari)
-        if: always()
-        run: sudo safaridriver --enable 2>/dev/null || true
+      - name: Process via Safari
+        env:
+          URL: ${{ steps.queue.outputs.current_url }}
+          JOB_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+          TWOCAPTCHA: ${{ secrets.TWOCAPTCHA_API_KEY }}
+        run: |
+          python3 render.py
 
-      - name: Install Python dependencies
+      - name: Update queue (GitHub script - safe auth)
         if: always()
-        run: pip3 install --user --break-system-packages selenium requests
-
-      - name: Upload artifacts
-        if: always()
-        uses: actions/upload-artifact@v4.4.3
+        uses: actions/github-script@v7
         with:
-          name: queue-results-${{ github.run_id }}
-          path: render-results/
-          retention-days: 7
+          script: |
+            const fs = require('fs');
+            const path = 'queue.json';
+            
+            if (!fs.existsSync(path)) {
+              console.log('✓ Queue file not found (already cleaned)');
+              return;
+            }
+
+            const queue = JSON.parse(fs.readFileSync(path, 'utf8'));
+            if (queue.urls && queue.urls.length > 0) {
+              queue.urls.shift();
+              queue.processing = false;
+              
+              fs.writeFileSync(path, JSON.stringify(queue, null, 2));
+              
+              // Commit with GitHub's safe auth
+              exec.exec('git', ['add', 'queue.json']);
+              exec.exec('git', ['config', 'user.name', 'github-actions[bot]']);
+              exec.exec('git', ['config', 'user.email', 'github-actions[bot]@users.noreply.github.com']);
+              exec.exec('git', ['commit', '-m', '[QUEUE] URL processed']);
+              exec.exec('git', ['push']);
+            }
