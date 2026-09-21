@@ -1,10 +1,7 @@
 {
   "name": "safari-renderer",
   "version": "1.0.0",
-  "type": "module",
-  "description": "Safari browser rendering with 2captcha CAPTCHA solving",
-  "main": "render.js",
-  "dependencies": {
-    "playwright": "^1.63.0"
-  }
+  "description": "Safari browser rendering with 2captcha CAPTCHA solving (real Safari via Selenium)",
+  "keywords": ["safari", "selenium", "captcha", "2captcha"],
+  "license": "MIT"
 }
