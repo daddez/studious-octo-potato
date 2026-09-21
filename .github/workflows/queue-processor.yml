@@ -9,6 +9,12 @@ permissions:
   contents: write
   actions: write
 
+# CRITICAL: Concurrency lock per prevenire race conditions
+# Solo un job può processare la queue alla volta
+concurrency:
+  group: queue-processor-lock
+  cancel-in-progress: true
+
 jobs:
   process:
     runs-on: macos-latest
@@ -16,6 +22,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4.2.2
+        with:
+          fetch-depth: 1
 
       - name: Check queue and process URL
         env:
@@ -65,20 +73,43 @@ jobs:
           with open('queue.json', 'w') as f:
               json.dump(queue_data, f, indent=2)
 
-          # Commit aggiornamento queue
+          # Commit aggiornamento queue (ATOMIC: git pull --rebase prima di push)
           subprocess.run(['git', 'add', 'queue.json'], check=True)
           subprocess.run([
-              'git', 'commit', '-m',
-              f'Queue: processing {current_url[:60]}'
+              'git', 'config', 'user.name', 'queue-processor-bot'
           ], check=True)
-          subprocess.run(['git', 'push', 'origin', 'main'], check=True)
+          subprocess.run([
+              'git', 'config', 'user.email', 'queue-processor@bot.local'
+          ], check=True)
 
-          # Trigger render
+          # Pull rebase per evitare merge conflicts
+          subprocess.run(['git', 'pull', '--rebase', 'origin', 'main'], check=True, capture_output=True)
+
+          subprocess.run([
+              'git', 'commit', '-m',
+              f'[QUEUE] Processing {current_url[:60]}... (ID: {job_id})'
+          ], check=True)
+
+          # Push con retry su conflict
+          max_retries = 3
+          for attempt in range(max_retries):
+              try:
+                  subprocess.run(['git', 'push', 'origin', 'main'], check=True, capture_output=True, timeout=30)
+                  print("✓ Queue status pushed to GitHub")
+                  break
+              except subprocess.CalledProcessError:
+                  if attempt < max_retries - 1:
+                      print(f"⚠️ Push attempt {attempt+1} failed, retrying...")
+                      subprocess.run(['git', 'pull', '--rebase', 'origin', 'main'], check=True, capture_output=True)
+                  else:
+                      print("❌ Push failed after 3 retries - queue lock held")
+                      exit(1)
+
+          # Esegui render.py
           os.environ['URL'] = current_url
           os.environ['JOB_ID'] = job_id
           os.environ['CAPTCHA_API_KEY'] = os.environ.get('TWOCAPTCHA_API_KEY', '')
 
-          # Esegui render.py
           result = subprocess.run(['python3', 'render.py'], capture_output=True, text=True)
           print(result.stdout)
           if result.stderr:
@@ -87,10 +118,13 @@ jobs:
           if result.returncode == 0:
               print(f"✅ Render completato: {job_id}")
           else:
-              print(f"❌ Render fallito: {job_id}")
+              print(f"⚠️ Render failed (returncode={result.returncode}), continuando con prossimo URL...")
 
-          # Aggiorna queue.json: rimuovi URL elaborato
-          queue_data['urls'] = urls[1:]
+          # Aggiorna queue.json: rimuovi URL elaborato (ATOMIC: pull rebase + push)
+          with open('queue.json', 'r') as f:
+              queue_data = json.load(f)
+
+          queue_data['urls'] = queue_data['urls'][1:]  # Remove first URL
           queue_data['processing'] = False
           queue_data['last_activity'] = datetime.now().isoformat()
           if 'current_url' in queue_data:
@@ -102,15 +136,28 @@ jobs:
               json.dump(queue_data, f, indent=2)
 
           subprocess.run(['git', 'add', 'queue.json'], check=True)
+
+          # Pull rebase again before final commit
+          subprocess.run(['git', 'pull', '--rebase', 'origin', 'main'], check=True, capture_output=True)
+
+          remaining = len(queue_data['urls'])
           subprocess.run([
               'git', 'commit', '-m',
-              f'Queue: completed {current_url[:60]} - {len(urls)-1} remaining'
+              f'[QUEUE] Completed {current_url[:50]}... - {remaining} remaining'
           ], check=True)
-          subprocess.run(['git', 'push', 'origin', 'main'], check=True)
+
+          # Final push with retry
+          for attempt in range(max_retries):
+              try:
+                  subprocess.run(['git', 'push', 'origin', 'main'], check=True, capture_output=True, timeout=30)
+                  break
+              except subprocess.CalledProcessError:
+                  if attempt < max_retries - 1:
+                      subprocess.run(['git', 'pull', '--rebase', 'origin', 'main'], check=True, capture_output=True)
 
           print(f"\n📊 Queue status:")
           print(f"   Elaborati: 1")
-          print(f"   Rimanenti: {len(urls)-1}")
+          print(f"   Rimanenti: {remaining}")
           PYEOF
 
       - name: Enable safaridriver (real Safari)
